@@ -66,4 +66,165 @@ depending on the LLM to used, you can comment and where necessary. The results w
 
 ![llm-code-comparison](./images/code_both_queries.png "both LLMs code comparison")
 
-Due to resource intensiveness, I opted to proceed with the lightweight though not very accurate qwen2:0.5b open source LLM.
+The top response is by qwen2:0.5b and the bottom one is by gemma:2b. Due to resource intensiveness, I opted to proceed with the lightweight open source llm(qwen2:0.5b) though if you are not restrained in terms of resources, it would be advisavle to go for even bigger llms with more parameters as they seem to be more accurate.
+
+### Running a chatbot on the terminal
+
+```python
+    # import the necessary libraries
+    from langchain_ollama import OllamaLLM
+    from langchain_core.prompts import ChatPromptTemplate
+
+
+    template = """
+    Answer the below question.
+
+    Here is the conversation history: {context}
+
+    Question: {question}
+
+    Answer:
+    """
+
+    prompt = ChatPromptTemplate.from_template(template)
+
+    model = OllamaLLM(model="qwen2:0.5b")
+
+    # chain the prompt to the model
+    chain = prompt | model
+
+    # create function to allow for a history in chats
+    def local_chatbot():
+        context = ''
+        print('Welcome to my AI Chatbot. Type "exit" to quit.')
+        while True:
+            user_input = input('You: ')
+            if user_input.lower() == 'exit':
+                break
+
+            # generate a response
+            result= chain.invoke({"context":context,"question":user_input})
+            print('Bot: ', result)
+            # storing the conversation history
+            context += f"\nUser: {user_input} \nAI:{result}"
+
+    # call the function and execute it, until user exits
+    if __name__ == "__main__":
+        local_chatbot()
+```
+
+this works well allowing you to mimic an actual chatbot on the terminal as seem ![here](./images/chatbot_convo.png "chatbot conversation")
+
+### Connecting to a local database
+
+
+```python
+
+    from langchain_community.utilities import SQLDatabase
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain.memory import ConversationBufferMemory
+    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain_core.output_parsers import StrOutputParser
+    from langchain_core.runnables import RunnablePassthrough
+    from langchain_core.runnables import RunnableLambda
+    from langchain_community.chat_models import ChatOllama
+    from dotenv import load_dotenv
+    import os
+
+    load_dotenv('.env')
+
+    # set the llm we want to use
+    # llm = ChatOllama(model="gemma:2b")
+    llm = ChatOllama(model="qwen2:0.5b")
+    USERNAME = 'sa'
+
+    # use string interpolation to create a connection string variable
+    connectionString = f"""
+        DRIVER={{ODBC Driver 17 for SQL Server}};
+        SERVER={os.getenv('SERVER')};
+        DATABASE={os.getenv('DATABASE')};
+        UID={USERNAME};
+        PWD={os.getenv('PASSWORD')};
+        """
+
+    uri=os.getenv('uri')
+
+    db = SQLDatabase.from_uri(uri, sample_rows_in_table_info=0)
+
+
+    def get_schema(_):
+    return db.get_table_info()
+
+
+    def run_query(query):
+    return db.run(query)
+
+    template = """Given an input question, convert it to a SQL query. No pre-amble. Based on the table schema below, write a SQL query that would answer the user's question:
+    {schema}
+    """
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", template),
+            MessagesPlaceholder(variable_name="history"),
+            ("human", "{question}"),
+        ]
+    )
+
+    memory = ConversationBufferMemory(return_messages=True)
+
+    # Chain to query with memory
+
+    sql_chain = (
+        RunnablePassthrough.assign(
+            schema=get_schema,
+            history=RunnableLambda(lambda x: memory.load_memory_variables(x)["history"]),
+        )
+        | prompt
+        | llm.bind(stop=["\nSQLResult:"])
+        | StrOutputParser()
+    )
+
+
+    def save(input_output):
+        output = {"output": input_output.pop("output")}
+        memory.save_context(input_output, output)
+        return output["output"]
+
+
+    sql_response_memory = RunnablePassthrough.assign(output=sql_chain) | save
+    memory_response = sql_response_memory.invoke({"question": "how many users do i have in my database?"})
+    print(memory_response)
+
+
+    # Chain to answer
+    template = """Based on the table schema below, question, sql query, and sql response, write a natural language response:
+    {schema}
+
+    Question: {question}
+    SQL Query: {query}
+    SQL Response: {response}"""
+    prompt_response = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "Given an input question and SQL response, convert it to a natural language answer. No pre-amble.",
+            ),
+            ("human", template),
+        ]
+    )
+
+    full_chain = (
+        RunnablePassthrough.assign(query=sql_response_memory)
+        | RunnablePassthrough.assign(
+            schema=get_schema,
+            response=lambda x: db.run(x["query"]),
+        )
+        | prompt_response
+        | llm
+    )
+
+    memory_chain = full_chain.invoke({"question": "List me all the users from my users table who are admins"})
+    print(memory_chain)
+```
+
+further documentation on this can be found [here](https://github.com/langchain-ai/langchain/blob/master/cookbook/LLaMA2_sql_chat.ipynb) 
