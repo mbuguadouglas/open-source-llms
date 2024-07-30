@@ -1,0 +1,8 @@
+#have a conversation with llm
+POST http://127.0.0.1:5000/chatbot
+Content-Type: application/json
+
+{
+    "userId" : "20e52e50-59e6-487c-b05f-2eb84a16bf1e",
+    "query" : "how many polls do i have listed in my polls table?"
+}
